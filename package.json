@@ -5,10 +5,10 @@
     "app"
   ],
   "scripts": {
-    "dev": "bun --cwd=app run dev",
-    "build": "bun --cwd=app run build",
-    "preview": "bun --cwd=app run preview",
-    "test": "bun --cwd=app run test",
-    "typecheck": "bun --cwd=app run typecheck"
+    "dev": "npm run dev --workspace app",
+    "build": "npm run build --workspace app",
+    "preview": "npm run preview --workspace app",
+    "test": "npm run test --workspace app",
+    "typecheck": "npm run typecheck --workspace app"
   }
 }

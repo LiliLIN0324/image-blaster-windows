@@ -1,2 +1,8 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Hook scripts and CLI entrypoints must check out with LF. A CRLF shebang line is a
+# portability hazard across Windows shells, and the repo is authored on macOS where
+# `core.autocrlf` is usually false, so this drift only bites Windows clones.
+*.sh text eol=lf
+*.mjs text eol=lf

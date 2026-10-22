@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { rename, stat, unlink } from "node:fs/promises";
 import {
@@ -21,12 +22,18 @@ import {
   requestMetadataFiles,
   requestPath
 } from "../asset-pipeline/request-metadata.mjs";
+import { resolveFFmpeg, resolveFFprobe } from "../asset-pipeline/resolve-binary.mjs";
 
 const ENDPOINT = "fal-ai/elevenlabs/sound-effects/v2";
 const DEFAULT_OUTPUT_FORMAT = "mp3_44100_128";
 const SILENCE_THRESHOLD_DB = "-45dB";
 const START_SILENCE_SECONDS = "0.03";
 const END_SILENCE_SECONDS = "0.05";
+
+// Populated by assertAudioTools(). Every audio path needs these, including raw
+// loop output, because analyzeAudio() probes and measures what the provider returned.
+const audioTools = { ffmpeg: "ffmpeg", ffprobe: "ffprobe" };
+const REQUIRED_FFMPEG_FILTERS = ["loudnorm", "silencedetect", "volumedetect"];
 
 function asBool(value, fallback = false) {
   if (value === undefined) return fallback;
@@ -110,9 +117,42 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+// `ffmpeg -filters` entry lines are "<flags> <name> <io-spec> <description>" once
+// trimmed. The flags column widens or narrows between FFmpeg builds, so parse the
+// trimmed tokens instead of anchoring to a column. Legend lines such as
+// "  T.. = Timeline support" have no io-spec token and fall out.
+function parseFilterNames(filtersOutput) {
+  const names = new Set();
+  for (const line of filtersOutput.split(/\r?\n/)) {
+    const tokens = line.trim().split(/\s+/);
+    if (tokens.length < 3) continue;
+    const [, name, ioSpec] = tokens;
+    if (!/^[a-z][a-z0-9_]*$/u.test(name)) continue;
+    if (!ioSpec.includes("->")) continue;
+    names.add(name);
+  }
+  return names;
+}
+
 async function assertAudioTools() {
-  await runCommand("ffmpeg", ["-version"]);
-  await runCommand("ffprobe", ["-version"]);
+  audioTools.ffmpeg = await resolveFFmpeg();
+  audioTools.ffprobe = await resolveFFprobe();
+
+  const { stdout } = await runCommand(audioTools.ffmpeg, ["-hide_banner", "-filters"]);
+  const available = parseFilterNames(stdout);
+  if (available.size < 20) {
+    throw new Error(
+      `Unexpected output from ${audioTools.ffmpeg} -filters (parsed ${available.size} filters). ` +
+        "SFX analysis needs a standard FFmpeg build."
+    );
+  }
+  const missing = REQUIRED_FFMPEG_FILTERS.filter((filter) => !available.has(filter));
+  if (missing.length) {
+    throw new Error(
+      `${audioTools.ffmpeg} is missing required filter(s): ${missing.join(", ")}. ` +
+        "SFX post-processing needs a current FFmpeg build; an old one will produce confusing encode errors."
+    );
+  }
 }
 
 function parseDb(value) {
@@ -131,7 +171,7 @@ function canPostprocessExtension(extension) {
 }
 
 async function probeDuration(filePath) {
-  const { stdout } = await runCommand("ffprobe", [
+  const { stdout } = await runCommand(audioTools.ffprobe, [
     "-v",
     "error",
     "-show_entries",
@@ -145,7 +185,7 @@ async function probeDuration(filePath) {
 }
 
 async function detectSilence(filePath, durationSeconds) {
-  const { stderr } = await runCommand("ffmpeg", [
+  const { stderr } = await runCommand(audioTools.ffmpeg, [
     "-hide_banner",
     "-nostats",
     "-i",
@@ -192,7 +232,7 @@ async function detectSilence(filePath, durationSeconds) {
 }
 
 async function measureVolume(filePath) {
-  const { stderr } = await runCommand("ffmpeg", [
+  const { stderr } = await runCommand(audioTools.ffmpeg, [
     "-hide_banner",
     "-nostats",
     "-i",
@@ -262,7 +302,7 @@ export async function analyzeAndPostprocessAudio(filePath, options = {}) {
   ].join(",");
 
   try {
-    await runCommand("ffmpeg", ["-y", "-hide_banner", "-nostdin", "-i", filePath, "-af", filters, tempPath]);
+    await runCommand(audioTools.ffmpeg, ["-y", "-hide_banner", "-nostdin", "-i", filePath, "-af", filters, tempPath]);
     await rename(tempPath, filePath);
   } catch (error) {
     await unlink(tempPath).catch(() => {});
@@ -316,11 +356,11 @@ export async function generateSfx(options) {
   await ensureDir(outputDir);
   const extension = extensionForOutputFormat(outputFormat);
   const shouldPostprocess = asBool(postprocess, true) && !loop;
-  if (shouldPostprocess) {
-    await assertAudioTools();
-    if (!canPostprocessExtension(extension)) {
-      throw new Error(`Audio post-processing is only supported for mp3 and opus outputs, received ${outputFormat}.`);
-    }
+  // Resolve before submitting, so a missing FFmpeg fails the run instead of
+  // spending a paid FAL request and crashing while analyzing the result.
+  await assertAudioTools();
+  if (shouldPostprocess && !canPostprocessExtension(extension)) {
+    throw new Error(`Audio post-processing is only supported for mp3 and opus outputs, received ${outputFormat}.`);
   }
   const files = [];
   const requests = [];
@@ -456,7 +496,7 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
     console.error(error.message);
     process.exit(1);

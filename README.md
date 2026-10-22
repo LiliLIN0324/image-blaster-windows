@@ -6,7 +6,39 @@ Creates 3D environments, SFX, and meshes from a single image using Claude skills
 Can take you from an image to a fully meshed 3D environment in < 5 minutes, great for jumpstarting 3D work. Go full blast.
 
 
-## Quickstart
+## Windows fork
+
+This is a Windows-adapted fork of [`neilsonnn/image-blaster`](https://github.com/neilsonnn/image-blaster) by Neilson Koerner-Safrata. The concept, the skills, the prompts and the asset pipeline are all his. This branch changes only what stood between the repo and a working run on Windows, and keeps the MIT licence and copyright notice untouched.
+
+### What was broken on Windows
+
+The headline one is not in the Quickstart and produces no error message:
+
+| # | Problem | Fix |
+|---|---|---|
+| 1 | **Every CLI script silently did nothing.** Each of the 15 entrypoints guards `main()` by comparing `import.meta.url` against `file://` prepended to `process.argv[1]`. On Windows `process.argv[1]` is a backslash path like `C:\Users\...`, so that comparison is always false: `main()` never runs, nothing prints, and the script exits `0`. It looks like a successful no-op. | Compare `import.meta.url` against `pathToFileURL(process.argv[1]).href`. |
+| 2 | `lsof -i :5173` does not exist on Windows, so the viewer step in the blast order could not tell whether the dev server was already up. | Added `.claude/scripts/project/check-port.mjs`, a plain-Node TCP probe that prints `IN_USE`/`FREE` on any platform. |
+| 3 | Root scripts ran `bun --cwd=app`, requiring a Bun install. | Switched to `npm run <script> --workspace app`. The repo already declares `workspaces: ["app"]`, so this needs nothing extra. Bun users can still run `bun run dev` inside `app/`. |
+| 4 | SFX shells out to `ffmpeg`/`ffprobe` by bare name, and `assertAudioTools()` only ran when post-processing was on, while `analyzeAudio()` needs both tools on **every** SFX path including loops. A missing FFmpeg surfaced as a raw `ENOENT` deep inside a parallel block, after the paid request. | Added `resolve-binary.mjs`: honours `FFMPEG_PATH`/`FFPROBE_PATH`, then PATH, then standard Windows install dirs; validates that `loudnorm`/`silencedetect`/`volumedetect` exist; and the check now runs before any request is submitted. |
+| 5 | `.claude/hooks/*.sh` check out as CRLF under the default `core.autocrlf=true`, because `.gitattributes` only had `* text=auto`. Git Bash tolerated it here, but a CRLF shebang is a portability trap. | Pinned `*.sh` and `*.mjs` to `eol=lf`. |
+
+### Quickstart (Windows)
+
+1. `git clone https://github.com/LiliLIN0324/image-blaster-windows`
+2. `cd image-blaster-windows`
+3. `claude` (Claude Code installs natively on Windows; Git for Windows is required for the hook scripts)
+4. Copy `.env.example` to `.env` and paste your [World Labs](https://platform.worldlabs.ai/) and [FAL](https://fal.ai/) keys.
+5. If `ffmpeg -version` does not work in a plain terminal, set `FFMPEG_PATH` and `FFPROBE_PATH` in `.env`. **Point them at `ffmpeg.exe`, not a `.cmd` wrapper** — Node cannot `execFile` a `.cmd`, and the resolver will reject it with an explanation.
+6. Drop an image in `input/` and ask Claude to `blast it and confirm each step with me`.
+
+### Verified / not verified
+
+Verified on Windows 11 with Node 24: all 23 scripts parse, the guard fix makes `project-state.mjs` and the SFX CLI actually execute, the resolver's five failure and success paths behave as described, the port probe reports real listeners, and the SFX CLI now fails on `FAL_KEY` rather than on a missing FFmpeg.
+
+**Not verified: an actual generation run.** No World Labs or FAL request was made, so the 3D, world, image-edit and SFX output has not been exercised end to end, and the React viewer was never started. Treat those as untested on this branch.
+
+## Original quickstart
+
 
 1. Open a Terminal, enter `git clone https://github.com/neilsonnn/image-blaster`
 2. Enter the directory with `cd image-blaster`
